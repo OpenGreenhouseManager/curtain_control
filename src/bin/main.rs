@@ -59,13 +59,13 @@ async fn main(spawner: Spawner) -> ! {
     let sw_interrupt =
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
-    let mut rng = esp_hal::rng::Rng::new();
+    let rng = esp_hal::rng::Rng::new();
     info!("Embassy initialized!");
 
     let radio_init = alloc::boxed::Box::leak(alloc::boxed::Box::new(
         esp_radio::init().expect("Failed to initialize Wi-Fi/BLE controller"),
     ));
-    let (mut wifi_controller, interfaces) =
+    let (wifi_controller, interfaces) =
         esp_radio::wifi::new(radio_init, peripherals.WIFI, Default::default())
             .expect("Failed to initialize Wi-Fi controller");
 

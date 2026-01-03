@@ -63,14 +63,10 @@ smoltcp = { version = "0.12.0", default-features = false, features = [
   "socket-udp",
 ] }
 
-rust-mqtt = { version = "0.4.0", features = [
-  "alloc",
-  "log",
-  "v5",
-] }
-
 critical-section = "1.2.0"
 static_cell      = "2.1.1"
+serde = { version = "1.0.210", default-features = false, features = ["derive", "alloc"] }
+serde-json-core = "0.6.0"
 
 
 [profile.dev]

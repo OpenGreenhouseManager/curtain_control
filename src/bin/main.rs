@@ -10,13 +10,13 @@
 use embassy_executor::Spawner;
 use embassy_net::Runner;
 use embassy_time::{Duration, Timer};
+use embedded_io_async::{Read as _, Write as _};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::wifi::{
     self, ClientConfig, ModeConfig, WifiController, WifiDevice, WifiEvent, WifiStaState,
 };
-use embedded_io_async::{Read as _, Write as _};
 use log::{debug, error, info, trace};
 use serde::Deserialize;
 
@@ -120,7 +120,10 @@ async fn main(spawner: Spawner) -> ! {
         socket.set_timeout(None);
 
         let address = embassy_net::IpAddress::Ipv4(SERVER_IP_V4.into());
-        info!("Connecting to {}.{}.{}.{}:{} ...", SERVER_IP_V4[0], SERVER_IP_V4[1], SERVER_IP_V4[2], SERVER_IP_V4[3], SERVER_PORT);
+        info!(
+            "Connecting to {}.{}.{}.{}:{} ...",
+            SERVER_IP_V4[0], SERVER_IP_V4[1], SERVER_IP_V4[2], SERVER_IP_V4[3], SERVER_PORT
+        );
         match socket.connect((address, SERVER_PORT)).await {
             Ok(()) => info!("TCP connected"),
             Err(e) => {
@@ -251,11 +254,7 @@ struct IncomingCommand<'a> {
     value: Option<u32>,
 }
 
-async fn handle_line(
-    s: &str,
-    cached_value: &mut u8,
-    socket: &mut embassy_net::tcp::TcpSocket<'_>,
-) {
+async fn handle_line(s: &str, cached_value: &mut u8, socket: &mut embassy_net::tcp::TcpSocket<'_>) {
     // Parse with serde-json-core; ignore on failure
     match serde_json_core::de::from_str::<IncomingCommand>(s) {
         Ok((cmd, _rest)) => {
@@ -298,7 +297,10 @@ async fn handle_line(
                             error!("Write error (error missing value id={}): {:?}", id, e);
                         }
                         if let Err(e) = socket.write_all(b"\n").await {
-                            error!("Write error (newline error missing value id={}): {:?}", id, e);
+                            error!(
+                                "Write error (newline error missing value id={}): {:?}",
+                                id, e
+                            );
                         }
                     }
                 }

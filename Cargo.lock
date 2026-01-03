@@ -107,7 +107,7 @@ dependencies = [
  "embassy-net",
  "embassy-time",
  "embedded-io 0.7.1",
- "embedded-io-async 0.7.0",
+ "embedded-io-async 0.6.1",
  "esp-alloc",
  "esp-backtrace",
  "esp-bootloader-esp-idf",
@@ -116,6 +116,7 @@ dependencies = [
  "esp-radio",
  "esp-rtos",
  "log",
+ "rust-mqtt",
  "smoltcp",
  "static_cell",
 ]
@@ -1277,6 +1278,17 @@ dependencies = [
  "const-default",
  "libc",
  "svgbobdoc",
+]
+
+[[package]]
+name = "rust-mqtt"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "62317fa1ee34a89a8307fd8a5fd59a3c4c63e48aa332b351b7bdb84e7377b5c0"
+dependencies = [
+ "embedded-io-async 0.7.0",
+ "heapless 0.9.2",
+ "log",
 ]
 
 [[package]]

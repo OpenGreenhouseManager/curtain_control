@@ -8,17 +8,30 @@
 #![deny(clippy::large_stack_frames)]
 
 use embassy_executor::Spawner;
+use embassy_net::Runner;
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::timer::timg::TimerGroup;
-use log::info;
+use esp_radio::wifi::{
+    self, ClientConfig, ModeConfig, WifiController, WifiDevice, WifiEvent, WifiStaState,
+};
+use log::{debug, error, info};
 
 extern crate alloc;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
+
+macro_rules! mk_static {
+    ($t:ty,$val:expr) => {{
+        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        #[deny(unused_attributes)]
+        let x = STATIC_CELL.uninit().write(($val));
+        x
+    }};
+}
 
 #[allow(
     clippy::large_stack_frames,
@@ -39,21 +52,122 @@ async fn main(spawner: Spawner) -> ! {
     let sw_interrupt =
         esp_hal::interrupt::software::SoftwareInterruptControl::new(peripherals.SW_INTERRUPT);
     esp_rtos::start(timg0.timer0, sw_interrupt.software_interrupt0);
-
+    let mut rng = esp_hal::rng::Rng::new();
     info!("Embassy initialized!");
 
-    let radio_init = esp_radio::init().expect("Failed to initialize Wi-Fi/BLE controller");
-    let (mut _wifi_controller, _interfaces) =
-        esp_radio::wifi::new(&radio_init, peripherals.WIFI, Default::default())
+    let radio_init = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+        esp_radio::init().expect("Failed to initialize Wi-Fi/BLE controller"),
+    ));
+    let (mut wifi_controller, interfaces) =
+        esp_radio::wifi::new(radio_init, peripherals.WIFI, Default::default())
             .expect("Failed to initialize Wi-Fi controller");
 
     // TODO: Spawn some tasks
-    let _ = spawner;
+    let config = embassy_net::Config::dhcpv4(Default::default());
+
+    let seed = (rng.random() as u64) << 32 | rng.random() as u64;
+
+    // Init network stack
+    let (stack, runner) = embassy_net::new(
+        interfaces.sta,
+        config,
+        mk_static!(
+            embassy_net::StackResources<3>,
+            embassy_net::StackResources::<3>::new()
+        ),
+        seed,
+    );
+
+    spawner.spawn(connection(wifi_controller)).ok();
+    spawner.spawn(net_task(runner)).ok();
+
+    let mut rx_buffer = [0; 4096];
+    let mut tx_buffer = [0; 4096];
+
+    //wait until wifi connected
+    loop {
+        if stack.is_link_up() {
+            break;
+        }
+        Timer::after(Duration::from_millis(500)).await;
+    }
+
+    info!("Waiting to get IP address...");
+    loop {
+        if let Some(config) = stack.config_v4() {
+            info!("Got IP: {}", config.address); //dhcp IP address
+            break;
+        }
+        Timer::after(Duration::from_millis(500)).await;
+    }
 
     loop {
-        info!("Hello world!");
-        Timer::after(Duration::from_secs(1)).await;
+        Timer::after(Duration::from_millis(1_000)).await;
+
+        let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+
+        socket.set_timeout(Some(embassy_time::Duration::from_secs(10)));
+
+        let remote_endpoint = ("192.168.178.21", 1883);
+        info!("connecting...");
+
+        let address = embassy_net::IpAddress::Ipv4([192, 168, 178, 21].into());
+
+        let connection = socket.connect((address, 1883)).await;
+        if let Err(e) = connection {
+            error!("connect error: {:?}", e);
+            continue;
+        }
+        info!("connected!");
+
+        loop {
+            info!("Current temperature: {}", 2);
+
+            Timer::after(Duration::from_millis(3000)).await;
+        }
     }
 
     // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v~1.0/examples
+}
+
+// maintains wifi connection, when it disconnects it tries to reconnect
+#[embassy_executor::task]
+async fn connection(mut controller: WifiController<'static>) {
+    info!("start connection task");
+    debug!("Device capabilities: {:?}", controller.capabilities());
+    loop {
+        match wifi::sta_state() {
+            WifiStaState::Connected => {
+                // wait until we're no longer connected
+                controller.wait_for_event(WifiEvent::StaDisconnected).await;
+                Timer::after(Duration::from_millis(5000)).await
+            }
+            _ => {}
+        }
+        let c = ClientConfig::default()
+            .with_ssid("FRITZ!Box 7530 PS".into())
+            .with_password("06346084740791889371".into());
+        if !matches!(controller.is_started(), Ok(true)) {
+            let client_config = ModeConfig::Client(c);
+            controller.set_config(&client_config).unwrap();
+            info!("Starting wifi");
+            controller.start_async().await.unwrap();
+            info!("Wifi started!");
+        }
+        info!("About to connect...");
+
+        match controller.connect_async().await {
+            Ok(_) => info!("Wifi connected!"),
+            Err(e) => {
+                error!("Failed to connect to wifi: {e:?}");
+                Timer::after(Duration::from_millis(5000)).await
+            }
+        }
+    }
+}
+
+// A background task, to process network events - when new packets, they need to processed, embassy-net, wraps smoltcp
+#[embassy_executor::task]
+async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
+    runner.run().await
 }

@@ -70,6 +70,8 @@ impl<'a> TcpClient<'a> {
         let mut line_len: usize = 0;
         let mut chunk = [0u8; 128];
 
+        self.register().await;
+
         'read_loop: loop {
             match self.socket.as_mut().unwrap().read(&mut chunk).await {
                 Ok(0) => {

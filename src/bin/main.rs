@@ -7,6 +7,7 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
+use curtain_control::tcp_client::TcpClient;
 use embassy_executor::Spawner;
 use embassy_net::Runner;
 use embassy_time::{Duration, Timer};
@@ -19,7 +20,6 @@ use esp_radio::wifi::{
 };
 use log::{debug, error, info, trace};
 use serde::Deserialize;
-
 extern crate alloc;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
@@ -28,8 +28,6 @@ esp_bootloader_esp_idf::esp_app_desc!();
 
 const SERVER_IP_V4: [u8; 4] = [192, 168, 178, 21]; // Raspberry Pi IP
 const SERVER_PORT: u16 = 9000; // TCP server port on the Pi
-const RECONNECT_DELAY_MS: u64 = 2_000;
-const CLIENT_UUID: &str = "8a3a3b0e-10b0-4f5e-bb14-7eac9ced0001";
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
@@ -88,7 +86,7 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(connection(wifi_controller)).ok();
     spawner.spawn(net_task(runner)).ok();
 
-    let mut rx_buffer = [0; 4096];
+    let mut rx_buffer: [i32; _] = [0; 4096];
     let mut tx_buffer = [0; 4096];
     let mut cached_value: u8 = 0;
 
@@ -114,89 +112,15 @@ async fn main(spawner: Spawner) -> ! {
         // Small delay to avoid tight reconnect loops
         Timer::after(Duration::from_millis(1_000)).await;
 
-        let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-        // Do not set a read timeout; idle periods are expected. The server may stay silent
-        // between commands, so we keep the connection open indefinitely.
-        socket.set_timeout(None);
-
-        let address = embassy_net::IpAddress::Ipv4(SERVER_IP_V4.into());
-        info!(
-            "Connecting to {}.{}.{}.{}:{} ...",
-            SERVER_IP_V4[0], SERVER_IP_V4[1], SERVER_IP_V4[2], SERVER_IP_V4[3], SERVER_PORT
-        );
-        match socket.connect((address, SERVER_PORT)).await {
-            Ok(()) => info!("TCP connected"),
-            Err(e) => {
-                error!("Connect error: {:?}", e);
-                Timer::after(Duration::from_millis(RECONNECT_DELAY_MS)).await;
-                continue;
-            }
-        }
+        let mut client = TcpClient::new().await;
+        client.connect(&stack).await;
 
         // Send register immediately after connect
-        {
-            let reg = alloc::format!(r#"{{"type":"register","uuid":"{}"}}"#, CLIENT_UUID);
-            debug!("TX: {}", reg);
-            if let Err(e) = socket.write_all(reg.as_bytes()).await {
-                error!("Register write error: {:?}", e);
-                // reconnect
-                continue;
-            }
-            if let Err(e) = socket.write_all(b"\n").await {
-                error!("Register newline write error: {:?}", e);
-                continue;
-            }
-            info!("Sent register");
-        }
 
-        // Read newline-delimited messages and respond
-        let mut line_buf = [0u8; 512];
-        let mut line_len: usize = 0;
-        let mut chunk = [0u8; 128];
-
-        'read_loop: loop {
-            match socket.read(&mut chunk).await {
-                Ok(0) => {
-                    info!("Server closed connection");
-                    break 'read_loop;
-                }
-                Ok(n) => {
-                    trace!("RX chunk ({} bytes): {:02X?}", n, &chunk[..n]);
-                    for &b in &chunk[..n] {
-                        if b == b'\n' {
-                            // process the completed line
-                            let line = &line_buf[..line_len];
-                            if let Ok(mut s) = core::str::from_utf8(line) {
-                                // Trim CR if present
-                                s = s.trim_end_matches('\r');
-                                if !s.is_empty() {
-                                    // Try to parse JSON command
-                                    debug!("RX line: {}", s);
-                                    handle_line(s, &mut cached_value, &mut socket).await;
-                                }
-                            } else {
-                                error!("Received non-UTF8 line ({} bytes), ignoring", line_len);
-                            }
-                            line_len = 0;
-                        } else if line_len < line_buf.len() {
-                            line_buf[line_len] = b;
-                            line_len += 1;
-                        } else {
-                            // overflow; drop the line
-                            error!("Line too long; dropping");
-                            line_len = 0;
-                        }
-                    }
-                }
-                Err(e) => {
-                    error!("Read error: {:?}", e);
-                    break 'read_loop;
-                }
-            }
-        }
+        client.serve();
 
         // Allow some time before reconnecting
-        Timer::after(Duration::from_millis(RECONNECT_DELAY_MS)).await;
+        Timer::after(Duration::from_millis(curtain_control::RECONNECT_DELAY_MS)).await;
     }
 
     // for inspiration have a look at the examples at https://github.com/esp-rs/esp-hal/tree/esp-hal-v~1.0/examples
@@ -242,112 +166,4 @@ async fn connection(mut controller: WifiController<'static>) {
 #[embassy_executor::task]
 async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
     runner.run().await
-}
-
-#[derive(Deserialize)]
-struct IncomingCommand<'a> {
-    #[serde(rename = "type")]
-    cmd_type: &'a str,
-    #[serde(default)]
-    id: Option<u32>,
-    #[serde(default)]
-    value: Option<u32>,
-}
-
-async fn handle_line(s: &str, cached_value: &mut u8, socket: &mut embassy_net::tcp::TcpSocket<'_>) {
-    // Parse with serde-json-core; ignore on failure
-    match serde_json_core::de::from_str::<IncomingCommand>(s) {
-        Ok((cmd, _rest)) => {
-            match cmd.cmd_type {
-                "set_value" => {
-                    if let (Some(id), Some(v)) = (cmd.id, cmd.value) {
-                        if v <= 100 {
-                            info!("set_value id={} value={}", id, v);
-                            *cached_value = v as u8;
-                            // Acknowledge success
-                            let msg = alloc::format!(r#"{{"type":"ack","id":{},"ok":true}}"#, id);
-                            debug!("TX: {}", msg);
-                            if let Err(e) = socket.write_all(msg.as_bytes()).await {
-                                error!("Write error (ack set_value id={}): {:?}", id, e);
-                            }
-                            if let Err(e) = socket.write_all(b"\n").await {
-                                error!("Write error (newline ack set_value id={}): {:?}", id, e);
-                            }
-                        } else {
-                            // Invalid range
-                            let msg = alloc::format!(
-                                r#"{{"type":"error","id":{},"message":"value out of range 0..100"}}"#,
-                                id
-                            );
-                            debug!("TX: {}", msg);
-                            if let Err(e) = socket.write_all(msg.as_bytes()).await {
-                                error!("Write error (error set_value id={}): {:?}", id, e);
-                            }
-                            if let Err(e) = socket.write_all(b"\n").await {
-                                error!("Write error (newline error set_value id={}): {:?}", id, e);
-                            }
-                        }
-                    } else if let Some(id) = cmd.id {
-                        let msg = alloc::format!(
-                            r#"{{"type":"error","id":{},"message":"missing value"}}"#,
-                            id
-                        );
-                        debug!("TX: {}", msg);
-                        if let Err(e) = socket.write_all(msg.as_bytes()).await {
-                            error!("Write error (error missing value id={}): {:?}", id, e);
-                        }
-                        if let Err(e) = socket.write_all(b"\n").await {
-                            error!(
-                                "Write error (newline error missing value id={}): {:?}",
-                                id, e
-                            );
-                        }
-                    }
-                }
-                "get_value" => {
-                    if let Some(id) = cmd.id {
-                        info!("get_value id={} -> {}", id, *cached_value as u8);
-                        let msg = alloc::format!(
-                            r#"{{"type":"value","id":{},"value":{}}}"#,
-                            id,
-                            *cached_value as u8
-                        );
-                        debug!("TX: {}", msg);
-                        if let Err(e) = socket.write_all(msg.as_bytes()).await {
-                            error!("Write error (value id={}): {:?}", id, e);
-                        }
-                        if let Err(e) = socket.write_all(b"\n").await {
-                            error!("Write error (newline value id={}): {:?}", id, e);
-                        }
-                    }
-                }
-                "calibrate" => {
-                    if let Some(id) = cmd.id {
-                        info!("calibrate start (id={})", id);
-                        calibrate_routine().await;
-                        info!("calibrate done (id={})", id);
-                        let msg = alloc::format!(r#"{{"type":"ack","id":{},"ok":true}}"#, id);
-                        debug!("TX: {}", msg);
-                        if let Err(e) = socket.write_all(msg.as_bytes()).await {
-                            error!("Write error (ack calibrate id={}): {:?}", id, e);
-                        }
-                        if let Err(e) = socket.write_all(b"\n").await {
-                            error!("Write error (newline ack calibrate id={}): {:?}", id, e);
-                        }
-                    }
-                }
-                _ => {
-                    // Ignore unknown types
-                }
-            }
-        }
-        Err(e) => {
-            let _ = e; // ignore parse errors; robustness over strictness
-        }
-    }
-}
-
-async fn calibrate_routine() {
-    // Placeholder: simulate calibration delay
-    Timer::after(Duration::from_millis(200)).await;
 }

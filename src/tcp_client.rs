@@ -32,7 +32,10 @@ pub struct TcpClient<'a> {
 
 impl<'a> TcpClient<'a> {
     pub async fn new() -> Self {
-        Self { socket: None, cached_value: 0 }
+        Self {
+            socket: None,
+            cached_value: 0,
+        }
     }
 
     pub async fn connect(&mut self, stack: &'a embassy_net::Stack<'a>) {
@@ -127,10 +130,7 @@ impl<'a> TcpClient<'a> {
         info!("Sent register");
     }
 
-    async fn handle_line(
-        &mut self,
-        s: &str,
-    ) {
+    async fn handle_line(&mut self, s: &str) {
         // Parse with serde-json-core; ignore on failure
         match serde_json_core::de::from_str::<IncomingCommand>(s) {
             Ok((cmd, _rest)) => {
@@ -140,31 +140,39 @@ impl<'a> TcpClient<'a> {
                             if v <= 100 {
                                 self.set_value(id, v).await;
                                 return;
-                            } 
-                            
-                                // Invalid range
+                            }
+
+                            // Invalid range
                             let msg = alloc::format!(
                                 r#"{{"type":"error","id":{},"message":"value out of range 0..100"}}"#,
                                 id
                             );
                             debug!("TX: {}", msg);
-                            if let Err(e) = self.socket.as_mut().unwrap().write_all(msg.as_bytes()).await {
+                            if let Err(e) = self
+                                .socket
+                                .as_mut()
+                                .unwrap()
+                                .write_all(msg.as_bytes())
+                                .await
+                            {
                                 error!("Write error (error set_value id={}): {:?}", id, e);
                             }
                             if let Err(e) = self.socket.as_mut().unwrap().write_all(b"\n").await {
-                                error!(
-                                    "Write error (newline error set_value id={}): {:?}",
-                                    id, e
-                                );
+                                error!("Write error (newline error set_value id={}): {:?}", id, e);
                             }
-                            
                         } else if let Some(id) = cmd.id {
                             let msg = alloc::format!(
                                 r#"{{"type":"error","id":{},"message":"missing value"}}"#,
                                 id
                             );
                             debug!("TX: {}", msg);
-                            if let Err(e) = self.socket.as_mut().unwrap().write_all(msg.as_bytes()).await {
+                            if let Err(e) = self
+                                .socket
+                                .as_mut()
+                                .unwrap()
+                                .write_all(msg.as_bytes())
+                                .await
+                            {
                                 error!("Write error (error missing value id={}): {:?}", id, e);
                             }
                             if let Err(e) = self.socket.as_mut().unwrap().write_all(b"\n").await {
@@ -200,29 +208,37 @@ impl<'a> TcpClient<'a> {
         info!("set_value id={} value={}", id, v);
         self.cached_value = v as u8;
         // Acknowledge success
-        let msg =
-            alloc::format!(r#"{{"type":"ack","id":{},"ok":true}}"#, id);
+        let msg = alloc::format!(r#"{{"type":"ack","id":{},"ok":true}}"#, id);
         debug!("TX: {}", msg);
-        if let Err(e) = self.socket.as_mut().unwrap().write_all(msg.as_bytes()).await {
+        if let Err(e) = self
+            .socket
+            .as_mut()
+            .unwrap()
+            .write_all(msg.as_bytes())
+            .await
+        {
             error!("Write error (ack set_value id={}): {:?}", id, e);
         }
         if let Err(e) = self.socket.as_mut().unwrap().write_all(b"\n").await {
-            error!(
-                "Write error (newline ack set_value id={}): {:?}",
-                id, e
-            );
+            error!("Write error (newline ack set_value id={}): {:?}", id, e);
         }
     }
 
     async fn get_value(&mut self, id: u32) {
-        info!("get_value id={} -> {}", id, self.cached_value as u8);
+        info!("get_value id={} -> {}", id, self.cached_value);
         let msg = alloc::format!(
             r#"{{"type":"value","id":{},"value":{}}}"#,
             id,
-            self.cached_value as u8
+            self.cached_value
         );
         debug!("TX: {}", msg);
-        if let Err(e) = self.socket.as_mut().unwrap().write_all(msg.as_bytes()).await {
+        if let Err(e) = self
+            .socket
+            .as_mut()
+            .unwrap()
+            .write_all(msg.as_bytes())
+            .await
+        {
             error!("Write error (value id={}): {:?}", id, e);
         }
         if let Err(e) = self.socket.as_mut().unwrap().write_all(b"\n").await {
@@ -236,7 +252,13 @@ impl<'a> TcpClient<'a> {
         info!("calibrate done (id={})", id);
         let msg = alloc::format!(r#"{{"type":"ack","id":{},"ok":true}}"#, id);
         debug!("TX: {}", msg);
-        if let Err(e) = self.socket.as_mut().unwrap().write_all(msg.as_bytes()).await {
+        if let Err(e) = self
+            .socket
+            .as_mut()
+            .unwrap()
+            .write_all(msg.as_bytes())
+            .await
+        {
             error!("Write error (ack calibrate id={}): {:?}", id, e);
         }
         if let Err(e) = self.socket.as_mut().unwrap().write_all(b"\n").await {

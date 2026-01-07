@@ -11,29 +11,24 @@ use curtain_control::tcp_client::TcpClient;
 use embassy_executor::Spawner;
 use embassy_net::Runner;
 use embassy_time::{Duration, Timer};
-use embedded_io_async::{Read as _, Write as _};
 use esp_backtrace as _;
 use esp_hal::clock::CpuClock;
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::wifi::{
     self, ClientConfig, ModeConfig, WifiController, WifiDevice, WifiEvent, WifiStaState,
 };
-use log::{debug, error, info, trace};
-use serde::Deserialize;
+use log::{debug, error, info};
 extern crate alloc;
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
 esp_bootloader_esp_idf::esp_app_desc!();
 
-const SERVER_IP_V4: [u8; 4] = [192, 168, 178, 21]; // Raspberry Pi IP
-const SERVER_PORT: u16 = 9000; // TCP server port on the Pi
-
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
         static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
         #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
+        let x = STATIC_CELL.uninit().write($val);
         x
     }};
 }
@@ -86,9 +81,9 @@ async fn main(spawner: Spawner) -> ! {
     spawner.spawn(connection(wifi_controller)).ok();
     spawner.spawn(net_task(runner)).ok();
 
-    let mut rx_buffer: [i32; _] = [0; 4096];
-    let mut tx_buffer = [0; 4096];
-    let mut cached_value: u8 = 0;
+    let _rx_buffer: [i32; _] = [0; 4096];
+    let _tx_buffer = [0; 4096];
+    let _cached_value: u8 = 0;
 
     //wait until wifi connected
     loop {
@@ -117,7 +112,7 @@ async fn main(spawner: Spawner) -> ! {
 
         // Send register immediately after connect
 
-        client.serve();
+        client.serve().await;
 
         // Allow some time before reconnecting
         Timer::after(Duration::from_millis(curtain_control::RECONNECT_DELAY_MS)).await;
@@ -127,18 +122,16 @@ async fn main(spawner: Spawner) -> ! {
 }
 
 // maintains wifi connection, when it disconnects it tries to reconnect
+#[allow(clippy::large_stack_frames)]
 #[embassy_executor::task]
 async fn connection(mut controller: WifiController<'static>) {
     info!("start connection task");
     debug!("Device capabilities: {:?}", controller.capabilities());
     loop {
-        match wifi::sta_state() {
-            WifiStaState::Connected => {
-                // wait until we're no longer connected
-                controller.wait_for_event(WifiEvent::StaDisconnected).await;
-                Timer::after(Duration::from_millis(5000)).await
-            }
-            _ => {}
+        if wifi::sta_state() == WifiStaState::Connected {
+            // wait until we're no longer connected
+            controller.wait_for_event(WifiEvent::StaDisconnected).await;
+            Timer::after(Duration::from_millis(5000)).await
         }
         let c = ClientConfig::default()
             .with_ssid("FRITZ!Box 7530 PS".into())

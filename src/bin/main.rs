@@ -7,18 +7,27 @@
 )]
 #![deny(clippy::large_stack_frames)]
 
+use core::cell::RefCell;
+
+use critical_section::Mutex;
+use curtain_control::stepper_controll::StepperController;
 use curtain_control::tcp_client::TcpClient;
 use embassy_executor::Spawner;
 use embassy_net::Runner;
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
-use esp_hal::clock::CpuClock;
+use esp_hal::gpio::{Event, Input, InputConfig, Io, Level, OutputConfig};
+use esp_hal::{handler, ram};
+use esp_hal::interrupt::{InterruptConfigurable, InterruptHandler, Priority};
+use esp_hal::{clock::CpuClock, gpio::Output};
 use esp_hal::timer::timg::TimerGroup;
 use esp_radio::wifi::{
     self, ClientConfig, ModeConfig, WifiController, WifiDevice, WifiEvent, WifiStaState,
 };
 use log::{debug, error, info};
 extern crate alloc;
+
+static BUTTON: Mutex<RefCell<Option<Input>>> = Mutex::new(RefCell::new(None));
 
 // This creates a default app-descriptor required by the esp-idf bootloader.
 // For more information see: <https://docs.espressif.com/projects/esp-idf/en/stable/esp32/api-reference/system/app_image_format.html#application-description>
@@ -45,6 +54,24 @@ async fn main(spawner: Spawner) -> ! {
 
     let config = esp_hal::Config::default().with_cpu_clock(CpuClock::max());
     let peripherals = esp_hal::init(config);
+
+    let step_pin = Output::new(peripherals.GPIO0, Level::High, OutputConfig::default());
+    let direction_pin = Output::new(peripherals.GPIO1, Level::High, OutputConfig::default());
+    let enable_pin = Output::new(peripherals.GPIO2, Level::High, OutputConfig::default());
+
+    let mut io = Io::new(peripherals.IO_MUX);
+    io.set_interrupt_handler(handler);
+
+
+    let mut interrupt_button = Input::new(peripherals.GPIO3, InputConfig::default());
+
+    critical_section::with(|cs| {
+        interrupt_button.listen(Event::FallingEdge);
+        BUTTON.borrow_ref_mut(cs).replace(interrupt_button)
+    });
+    
+    
+    let stepper_controller = StepperController::new(step_pin, direction_pin, enable_pin);
 
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 66320);
 
@@ -103,11 +130,11 @@ async fn main(spawner: Spawner) -> ! {
     }
 
     // Main client loop: connect, read lines, reconnect on error/close
+    let mut client = TcpClient::new(stepper_controller).await;
     loop {
         // Small delay to avoid tight reconnect loops
         Timer::after(Duration::from_millis(1_000)).await;
 
-        let mut client = TcpClient::new().await;
         client.connect(&stack).await;
 
         // Send register immediately after connect
@@ -159,4 +186,31 @@ async fn connection(mut controller: WifiController<'static>) {
 #[embassy_executor::task]
 async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
     runner.run().await
+}
+
+
+#[handler]
+#[ram]
+fn handler() {
+    esp_println::println!("GPIO Interrupt");
+
+    if critical_section::with(|cs| {
+        BUTTON
+            .borrow_ref_mut(cs)
+            .as_mut()
+            .unwrap()
+            .is_interrupt_set()
+    }) {
+        esp_println::println!("Button was the source of the interrupt");
+    } else {
+        esp_println::println!("Button was not the source of the interrupt");
+    }
+
+    critical_section::with(|cs| {
+        BUTTON
+            .borrow_ref_mut(cs)
+            .as_mut()
+            .unwrap()
+            .clear_interrupt()
+    });
 }

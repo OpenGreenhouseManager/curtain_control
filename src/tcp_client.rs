@@ -5,7 +5,7 @@ use embedded_io_async::Write;
 use log::{debug, error, info, trace};
 use serde::Deserialize;
 
-use crate::{CLIENT_UUID, RECONNECT_DELAY_MS};
+use crate::{CLIENT_UUID, RECONNECT_DELAY_MS, stepper_controll::StepperController};
 
 #[derive(Deserialize)]
 struct IncomingCommand<'a> {
@@ -27,13 +27,15 @@ static mut TX_BUFFER: [u8; 4096] = [0; 4096];
 
 pub struct TcpClient<'a> {
     socket: Option<embassy_net::tcp::TcpSocket<'a>>,
+    stepper_controller: StepperController<'a>,
     cached_value: u8,
 }
 
 impl<'a> TcpClient<'a> {
-    pub async fn new() -> Self {
+    pub async fn new(stepper_controller: StepperController<'a>) -> Self {
         Self {
             socket: None,
+            stepper_controller: stepper_controller,
             cached_value: 0,
         }
     }

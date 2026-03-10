@@ -1,0 +1,6 @@
+[cargo]
+target = "riscv32imc-unknown-none-elf"
+allTargets = false
+
+[check]
+allTargets = false

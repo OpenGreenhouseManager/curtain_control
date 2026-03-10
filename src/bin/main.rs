@@ -10,17 +10,17 @@
 use core::cell::RefCell;
 
 use critical_section::Mutex;
-use curtain_control::stepper_controll::StepperController;
+use curtain_control::lineat_motor::LinearMotorController;
 use curtain_control::tcp_client::TcpClient;
 use embassy_executor::Spawner;
 use embassy_net::Runner;
 use embassy_time::{Duration, Timer};
 use esp_backtrace as _;
 use esp_hal::gpio::{Event, Input, InputConfig, Io, Level, OutputConfig};
-use esp_hal::{handler, ram};
-use esp_hal::interrupt::{InterruptConfigurable, InterruptHandler, Priority};
-use esp_hal::{clock::CpuClock, gpio::Output};
+use esp_hal::interrupt::{InterruptHandler, Priority};
 use esp_hal::timer::timg::TimerGroup;
+use esp_hal::{clock::CpuClock, gpio::Output};
+use esp_hal::{handler, ram};
 use esp_radio::wifi::{
     self, ClientConfig, ModeConfig, WifiController, WifiDevice, WifiEvent, WifiStaState,
 };
@@ -62,16 +62,14 @@ async fn main(spawner: Spawner) -> ! {
     let mut io = Io::new(peripherals.IO_MUX);
     io.set_interrupt_handler(handler);
 
-
     let mut interrupt_button = Input::new(peripherals.GPIO3, InputConfig::default());
 
     critical_section::with(|cs| {
         interrupt_button.listen(Event::FallingEdge);
         BUTTON.borrow_ref_mut(cs).replace(interrupt_button)
     });
-    
-    
-    let stepper_controller = StepperController::new(step_pin, direction_pin, enable_pin);
+
+    let stepper_controller = LinearMotorController::new(step_pin, direction_pin, enable_pin);
 
     esp_alloc::heap_allocator!(#[esp_hal::ram(reclaimed)] size: 66320);
 
@@ -187,7 +185,6 @@ async fn connection(mut controller: WifiController<'static>) {
 async fn net_task(mut runner: Runner<'static, WifiDevice<'static>>) {
     runner.run().await
 }
-
 
 #[handler]
 #[ram]
